@@ -17,15 +17,51 @@ OUTPUT_DIR = Path("outputs")
 API_KEY = ""
 
 
-def load_local_env():
-    """Charge simplement les variables KEY=VALUE d'un .env local, sans dépendance."""
-    path = Path(".env")
-    if path.is_file():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+def clean_key(value):
+    """Retire espaces, guillemets et espaces accidentels autour d'une clé."""
+    if value is None:
+        return ""
+    return str(value).strip().strip('"').strip("'").strip()
+
+
+def load_api_key():
+    """Cherche la clé dans l'environnement puis .env, sinon demande interactivement."""
+    key = clean_key(os.getenv("RODIUMAI_API_KEY"))
+    if not key:
+        env_path = Path(__file__).resolve().parent / ".env"
+        if env_path.is_file():
+            try:
+                raw = env_path.read_bytes()
+                # Windows Notepad may save UTF-16 with a BOM; UTF-8-SIG handles UTF-8 BOM.
+                if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+                    content = raw.decode("utf-16", errors="ignore")
+                else:
+                    content = raw.decode("utf-8-sig", errors="ignore")
+                    # Also tolerate UTF-16 files lacking a BOM by removing their NUL bytes.
+                    if "\x00" in content:
+                        content = content.replace("\x00", "")
+                for line in content.splitlines():
+                    line = line.strip().lstrip("\ufeff")
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    name, value = line.split("=", 1)
+                    if name.strip() == "RODIUMAI_API_KEY":
+                        key = clean_key(value)
+                        if key:
+                            break
+            except OSError as exc:
+                print(f"[AVERTISSEMENT] Lecture de .env impossible : {exc}", file=sys.stderr)
+    if not key:
+        try:
+            key = clean_key(input("Clé RODIUMAI_API_KEY non détectée. Entrez votre clé ici : "))
+        except (EOFError, KeyboardInterrupt):
+            print("\nSaisie de la clé annulée.", file=sys.stderr)
+            return ""
+    if key:
+        # Only show a masked preview; never print the complete secret.
+        suffix = key[-4:] if len(key) > 4 else "****"
+        print(f"[OK] Clé API chargée (rd_sk_...{suffix})")
+    return key
 
 
 def api_headers():
@@ -47,10 +83,9 @@ def request_json(method, endpoint, payload=None):
         detail = response_summary(response)
         raise RuntimeError(f"Réponse API HTTP {response.status_code}. Détails :\n{detail}\n\nVérifiez la clé, le solde RODI, le modèle et le format du payload.")
     try:
-        body = response.json()
+        return response.json()
     except ValueError:
         raise RuntimeError("L'API a répondu avec un succès HTTP mais pas du JSON. Réponse :\n" + (response.text or "<vide>")[:12000])
-    return body
 
 
 def nested_values(data):
@@ -187,7 +222,6 @@ def video_step():
             raise TimeoutError(f"Tâche vidéo {task_id} toujours non terminée après 10 minutes. Dernière réponse :\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
         poll_url = first_value(current, ["poll_url", "status_url", "result_url"])
         if not poll_url:
-            # Poll route commonly paired with the generation resource; status and raw response are logged.
             poll_url = f"videos/{task_id}"
         print(f"[DEBUG] Tâche vidéo {task_id}, statut={status or 'inconnu'}; nouvelle vérification dans 10 s via {poll_url}")
         time.sleep(10)
@@ -216,10 +250,9 @@ def navigation(step):
 
 def main():
     global API_KEY
-    load_local_env()
-    API_KEY = os.getenv("RODIUMAI_API_KEY", "").strip()
+    API_KEY = load_api_key()
     if not API_KEY:
-        print("RODIUMAI_API_KEY absente : renseignez .env (copie de .env.example) ou la variable d'environnement.", file=sys.stderr)
+        print("Clé API absente : impossible de lancer les requêtes RodiumAI.", file=sys.stderr)
         return 1
     step = 0
     while step < len(STEPS):
