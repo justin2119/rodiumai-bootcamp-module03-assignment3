@@ -7,5 +7,7 @@ __pycache__/
 .venv/
 venv/
 
-# Résultats générés
+# Fichiers générés
 outputs/
+output_image.png
+output_video.mp4

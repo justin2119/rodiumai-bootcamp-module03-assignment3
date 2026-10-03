@@ -1,164 +1,208 @@
 #!/usr/bin/env python3
-"""Parcours interactif Chat → Image → Vidéo pour l'API RodiumAI.
-Dépendance externe unique : requests. La clé API est lue depuis RODIUM_API_KEY.
-"""
-
+"""Parcours interactif RodiumAI : chat, image et vidéo (sans SDK)."""
 import base64
+import binascii
 import json
 import os
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 
 BASE_URL = "https://api.rodiumai.io/v1/"
-TIMEOUT = 60
+TIMEOUT = 90
 OUTPUT_DIR = Path("outputs")
+API_KEY = ""
 
 
-def api_key():
-    key = os.getenv("RODIUM_API_KEY", "").strip()
-    if not key:
-        key = input("Clé API RodiumAI (ou définissez RODIUM_API_KEY) : ").strip()
-    if not key:
-        raise ValueError("La clé API ne peut pas être vide.")
-    return key
+def load_local_env():
+    """Charge simplement les variables KEY=VALUE d'un .env local, sans dépendance."""
+    path = Path(".env")
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-def post_json(endpoint, payload):
-    response = requests.post(
-        urljoin(BASE_URL, endpoint),
-        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
+def api_headers():
+    return {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
 
-def download(url, destination):
-    response = requests.get(url, headers={"Authorization": f"Bearer {API_KEY}"}, stream=True, timeout=120)
-    response.raise_for_status()
-    with destination.open("wb") as output:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
+def response_summary(response):
+    try:
+        return json.dumps(response.json(), ensure_ascii=False, indent=2)[:12000]
+    except ValueError:
+        return (response.text or "<corps de réponse vide>")[:12000]
+
+
+def request_json(method, endpoint, payload=None):
+    url = endpoint if endpoint.startswith("http") else urljoin(BASE_URL, endpoint.lstrip("/"))
+    response = requests.request(method, url, headers=api_headers(), json=payload, timeout=TIMEOUT)
+    print(f"[HTTP] {method} {url} -> {response.status_code}")
+    if not response.ok:
+        detail = response_summary(response)
+        raise RuntimeError(f"Réponse API HTTP {response.status_code}. Détails :\n{detail}\n\nVérifiez la clé, le solde RODI, le modèle et le format du payload.")
+    try:
+        body = response.json()
+    except ValueError:
+        raise RuntimeError("L'API a répondu avec un succès HTTP mais pas du JSON. Réponse :\n" + (response.text or "<vide>")[:12000])
+    return body
+
+
+def nested_values(data):
+    """Iterate nested dict/list values; includes OpenAI data[] envelopes."""
+    yield data
+    if isinstance(data, dict):
+        for value in data.values():
+            yield from nested_values(value)
+    elif isinstance(data, list):
+        for value in data:
+            yield from nested_values(value)
+
+
+def first_value(data, names):
+    for node in nested_values(data):
+        if isinstance(node, dict):
+            for name in names:
+                value = node.get(name)
+                if value not in (None, ""):
+                    return value
+    return None
+
+
+def show_response(label, result):
+    print(f"[DEBUG] Réponse RodiumAI ({label}) :\n{json.dumps(result, ensure_ascii=False, indent=2)[:12000]}")
+
+
+def save_b64(value, path):
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    if not isinstance(value, str):
+        raise ValueError("La valeur base64 retournée n'est pas une chaîne.")
+    encoded = value.split(",", 1)[-1] if value.startswith("data:") else value
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"Données base64 invalides : {exc}") from exc
+    if not raw:
+        raise ValueError("L'API a retourné un contenu base64 vide.")
+    path.write_bytes(raw)
+
+
+def download_file(url, path):
+    # Les URLs de stockage peuvent être externes et signées : ne pas y transmettre la clé API.
+    absolute = urljoin(BASE_URL, url)
+    headers = {"Authorization": f"Bearer {API_KEY}"} if urlparse(absolute).netloc == urlparse(BASE_URL).netloc else {}
+    response = requests.get(absolute, headers=headers, stream=True, timeout=180)
+    print(f"[HTTP] GET fichier -> {response.status_code} ({absolute})")
+    if not response.ok:
+        raise RuntimeError(f"Téléchargement impossible (HTTP {response.status_code}) : {(response.text or '')[:4000]}")
+    with path.open("wb") as output:
+        for chunk in response.iter_content(1024 * 1024):
             if chunk:
                 output.write(chunk)
+    if path.stat().st_size == 0:
+        raise RuntimeError("Le téléchargement a produit un fichier vide.")
 
 
-def find_value(obj, key):
-    """Recherche récursive d'une valeur dans les réponses imbriquées."""
-    if isinstance(obj, dict):
-        if key in obj and obj[key] is not None:
-            return obj[key]
-        for value in obj.values():
-            found = find_value(value, key)
-            if found is not None:
-                return found
-    elif isinstance(obj, list):
-        for value in obj:
-            found = find_value(value, key)
-            if found is not None:
-                return found
-    return None
+def ensure_output_dir():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def chat_step():
     prompt = input("Votre question : ").strip()
     if not prompt:
-        print("La question est vide ; aucune requête envoyée.")
+        print("Question vide, aucun appel effectué.")
         return
-    result = post_json("chat/completions", {"messages": [{"role": "user", "content": prompt}]})
-    answer = find_value(result, "content")
-    if isinstance(answer, list):
-        answer = "".join(part.get("text", "") for part in answer if isinstance(part, dict))
-    print("\nRéponse :\n" + (str(answer) if answer is not None else json.dumps(result, ensure_ascii=False, indent=2)))
-    cost = find_value(result, "cost_rodi")
-    print(f"\nCoût RodiumAI (cost_rodi) : {cost if cost is not None else 'non fourni dans la réponse'}")
+    payload = {"messages": [{"role": "user", "content": prompt}]}
+    result = request_json("POST", "chat/completions", payload)
+    show_response("chat", result)
+    answer = first_value(result, ["content", "text"])
+    print("Réponse :", answer if answer is not None else "contenu introuvable (voir réponse brute ci-dessus)")
+    print("cost_rodi :", first_value(result, ["cost_rodi"]) or "non fourni")
 
 
 def image_step():
-    prompt = input("Description de l'image à générer : ").strip()
+    prompt = input("Description de l'image : ").strip()
     if not prompt:
-        print("Description vide ; aucune requête envoyée.")
+        print("Description vide, aucun appel effectué.")
         return
-    result = post_json("images/generations", {"prompt": prompt})
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    image_b64 = find_value(result, "b64_json")
-    if image_b64:
-        # Certaines API ajoutent un préfixe data:image/...;base64,
-        image_b64 = image_b64.split(",", 1)[-1]
-        path = OUTPUT_DIR / "image_generee.png"
-        path.write_bytes(base64.b64decode(image_b64))
+    payload = {"prompt": prompt}
+    model = os.getenv("RODIUMAI_IMAGE_MODEL", "").strip()
+    if model:
+        payload["model"] = model
+    payload["response_format"] = "b64_json"
+    print("[DEBUG] POST /v1/images/generations payload :", json.dumps(payload, ensure_ascii=False))
+    result = request_json("POST", "images/generations", payload)
+    show_response("image", result)
+    ensure_output_dir()
+    path = OUTPUT_DIR / "output_image.png"
+    encoded = first_value(result, ["b64_json", "image_base64", "base64"])
+    image_url = first_value(result, ["url", "image_url", "output_url"])
+    if encoded:
+        save_b64(encoded, path)
+    elif image_url:
+        download_file(str(image_url), path)
     else:
-        image_url = find_value(result, "url")
-        if not image_url:
-            raise ValueError("Réponse image sans b64_json ni URL : " + json.dumps(result, ensure_ascii=False))
-        path = OUTPUT_DIR / "image_generee.png"
-        download(image_url, path)
-    print(f"Image enregistrée : {path}")
+        raise RuntimeError("Réponse image réussie, mais aucun b64_json/base64/URL reconnu. Réponse brute ci-dessus. Vérifiez le modèle et response_format.")
+    print(f"Image créée : {path.resolve()} ({path.stat().st_size} octets)")
 
 
 def video_step():
-    prompt = input("Description de la courte vidéo à générer : ").strip()
+    prompt = input("Description de la vidéo : ").strip()
     if not prompt:
-        print("Description vide ; aucune requête envoyée.")
+        print("Description vide, aucun appel effectué.")
         return
-    result = post_json("videos/generations", {"prompt": prompt})
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUTPUT_DIR / "video_generee.mp4"
-    # Réponses possibles : URL immédiate, données base64 ou identifiant d'une tâche asynchrone.
-    video_url = find_value(result, "url") or find_value(result, "video_url")
-    video_b64 = find_value(result, "b64_json") or find_value(result, "video_base64")
-    task_id = find_value(result, "task_id") or find_value(result, "id")
-    if video_b64:
-        path.write_bytes(base64.b64decode(video_b64.split(",", 1)[-1]))
-    elif video_url:
-        download(video_url, path)
-    elif task_id:
-        # Interroge la ressource de tâche si la génération est asynchrone.
-        # Arrêt après environ 10 minutes ; l'API peut retourner l'URL ou la vidéo finalisée.
-        for _ in range(60):
-            time.sleep(10)
-            response = requests.get(
-                urljoin(BASE_URL, f"videos/{task_id}"),
-                headers={"Authorization": f"Bearer {API_KEY}"}, timeout=TIMEOUT,
-            )
-            response.raise_for_status()
-            status_data = response.json()
-            video_url = find_value(status_data, "url") or find_value(status_data, "video_url")
-            video_b64 = find_value(status_data, "b64_json") or find_value(status_data, "video_base64")
-            status = str(find_value(status_data, "status") or "").lower()
-            if video_b64:
-                path.write_bytes(base64.b64decode(video_b64.split(",", 1)[-1]))
-                break
-            if video_url:
-                download(video_url, path)
-                break
-            if status in {"failed", "error", "cancelled", "canceled"}:
-                raise RuntimeError("La génération vidéo a échoué : " + json.dumps(status_data, ensure_ascii=False))
-        else:
-            raise TimeoutError("La génération vidéo n'est pas terminée après 10 minutes.")
-    else:
-        raise ValueError("Réponse vidéo sans URL, base64 ou identifiant de tâche : " + json.dumps(result, ensure_ascii=False))
-    print(f"Vidéo enregistrée : {path}")
+    payload = {"prompt": prompt}
+    model = os.getenv("RODIUMAI_VIDEO_MODEL", "").strip()
+    if model:
+        payload["model"] = model
+    print("[DEBUG] POST /v1/videos/generations payload :", json.dumps(payload, ensure_ascii=False))
+    result = request_json("POST", "videos/generations", payload)
+    show_response("vidéo, création", result)
+    ensure_output_dir()
+    path = OUTPUT_DIR / "output_video.mp4"
+    deadline = time.monotonic() + 600
+    current = result
+    while True:
+        encoded = first_value(current, ["b64_json", "video_base64", "video_b64", "base64"])
+        video_url = first_value(current, ["video_url", "url", "output_url", "download_url"])
+        if encoded:
+            save_b64(encoded, path)
+            break
+        if video_url:
+            download_file(str(video_url), path)
+            break
+        status = str(first_value(current, ["status", "state"]) or "").lower()
+        if status in {"failed", "error", "cancelled", "canceled"}:
+            raise RuntimeError("Génération vidéo échouée. Réponse brute :\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
+        task_id = first_value(current, ["task_id", "request_id", "job_id", "id"])
+        if not task_id:
+            raise RuntimeError("Réponse vidéo sans URL/base64 ni identifiant de tâche reconnu. Réponse brute :\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Tâche vidéo {task_id} toujours non terminée après 10 minutes. Dernière réponse :\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
+        poll_url = first_value(current, ["poll_url", "status_url", "result_url"])
+        if not poll_url:
+            # Poll route commonly paired with the generation resource; status and raw response are logged.
+            poll_url = f"videos/{task_id}"
+        print(f"[DEBUG] Tâche vidéo {task_id}, statut={status or 'inconnu'}; nouvelle vérification dans 10 s via {poll_url}")
+        time.sleep(10)
+        current = request_json("GET", str(poll_url))
+        show_response("vidéo, polling", current)
+    print(f"Vidéo créée : {path.resolve()} ({path.stat().st_size} octets)")
 
 
-STEPS = [
-    ("Chat", chat_step),
-    ("Image", image_step),
-    ("Vidéo", video_step),
-]
+STEPS = [("Chat", chat_step), ("Image", image_step), ("Vidéo", video_step)]
 
 
 def navigation(step):
-    """Retourne -1 (précédent), 0 (refaire) ou +1 (suivant/terminer)."""
-    print("\nQue souhaitez-vous faire ?")
-    if step > 0:
-        print("1. Revenir à l'étape précédente")
+    print("\n1. Revenir à l'étape précédente" if step > 0 else "")
     print("2. Refaire l'étape actuelle")
-    print("3. Passer à l'étape suivante" + (" (terminer)" if step == len(STEPS) - 1 else ""))
+    print("3. Passer à l'étape suivante" + (" (terminer)" if step == 2 else ""))
     while True:
         choice = input("Votre choix : ").strip()
         if choice == "1" and step > 0:
@@ -167,36 +211,33 @@ def navigation(step):
             return 0
         if choice == "3":
             return 1
-        print("Choix invalide. Saisissez un numéro proposé.")
+        print("Choix invalide.")
 
 
 def main():
     global API_KEY
-    try:
-        API_KEY = api_key()
-        step = 0
-        while step < len(STEPS):
-            name, action = STEPS[step]
-            print(f"\n{'=' * 12} Étape {step + 1}/3 : {name} {'=' * 12}")
-            try:
-                action()
-            except requests.HTTPError as exc:
-                detail = exc.response.text[:2000] if exc.response is not None else str(exc)
-                print(f"Erreur HTTP : {detail}")
-            except (requests.RequestException, ValueError, RuntimeError, TimeoutError) as exc:
-                print(f"Erreur pendant l'étape : {exc}")
-            move = navigation(step)
-            if move == 1:
-                step += 1
-            elif move == -1:
-                step -= 1
-        print("Parcours terminé. Au revoir !")
-    except (KeyboardInterrupt, EOFError):
-        print("\nProgramme interrompu.")
-        return 130
-    except (ValueError, requests.RequestException) as exc:
-        print(f"Impossible de démarrer : {exc}", file=sys.stderr)
+    load_local_env()
+    API_KEY = os.getenv("RODIUMAI_API_KEY", "").strip()
+    if not API_KEY:
+        print("RODIUMAI_API_KEY absente : renseignez .env (copie de .env.example) ou la variable d'environnement.", file=sys.stderr)
         return 1
+    step = 0
+    while step < len(STEPS):
+        title, function = STEPS[step]
+        print(f"\n===== Étape {step + 1}/3 : {title} =====")
+        try:
+            function()
+        except KeyboardInterrupt:
+            print("\nÉtape interrompue.")
+        except (requests.RequestException, RuntimeError, ValueError, TimeoutError) as exc:
+            print(f"\n[ERREUR] {exc}", file=sys.stderr)
+            print("[AIDE] HTTP 401/403 : clé ou droits; 402/insufficient balance : solde; 400/422 : payload/modèle; 429 : quota/limite; 5xx : service amont. Consultez le détail HTTP ci-dessus.")
+        move = navigation(step)
+        if move == 1:
+            step += 1
+        elif move == -1:
+            step -= 1
+    print("Parcours terminé.")
     return 0
 
 

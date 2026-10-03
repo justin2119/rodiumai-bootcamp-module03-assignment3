@@ -1,54 +1,71 @@
-# RodiumAI — Module 03, Assignment 3
+# Exercice 2 — RodiumAI, Module 03 Assignment 3
 
-Script Python interactif qui enchaîne trois actions sur l'API RodiumAI : conversation, génération d'image et génération vidéo. Après chaque action, vous pouvez revenir à l'étape précédente, refaire l'étape actuelle ou avancer.
+Script Python interactif qui enchaîne une requête Chat, une génération d'image et une génération vidéo avec l'API RodiumAI.
+Il affiche les erreurs API détaillées et enregistre les médias créés dans `outputs/`.
 
-## Prérequis
+## Prérequis et installation
 
-- Python 3.8 ou plus récent
-- Une clé API RodiumAI
-
-## Installation
+Python 3.8 ou plus récent est requis. Clonez le dépôt, créez un environnement virtuel et installez la dépendance :
 
 ```bash
 git clone https://github.com/justin2119/rodiumai-bootcamp-module03-assignment3.git
 cd rodiumai-bootcamp-module03-assignment3
 python -m venv .venv
-# Linux/macOS
-source .venv/bin/activate
+# macOS/Linux : source .venv/bin/activate
 # Windows PowerShell : .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Le projet utilise uniquement la bibliothèque standard Python et `requests` (aucun SDK RodiumAI).
+## Configuration `.env`
 
-## Configuration de la clé
-
-Linux/macOS :
+Copiez `.env.example` sous le nom `.env` et remplacez la valeur de démonstration par votre clé RodiumAI. Le script charge `.env` sans bibliothèque additionnelle. Ne partagez jamais votre clé.
 
 ```bash
-export RODIUM_API_KEY="votre_cle_api"
+# macOS/Linux
+cp .env.example .env
+# Windows PowerShell
+Copy-Item .env.example .env
 ```
 
-Windows PowerShell :
+Le fichier `.env` est ignoré par Git. Le fichier `.env.example` contient uniquement la ligne `RODIUMAI_API_KEY=rd_sk_votre_cle`.
 
-```powershell
-$env:RODIUM_API_KEY="votre_cle_api"
+Optionnel : si votre compte/API exige le choix explicite d'un modèle d'image ou de vidéo, définissez les identifiants de modèles image-capable/video-capable indiqués dans le catalogue RodiumAI. Sans ces variables, le script envoie uniquement `prompt` (et `response_format: b64_json` pour l'image), afin de laisser le routage par défaut de l'API agir.
+
+```bash
+RODIUMAI_IMAGE_MODEL="identifiant-modele-image" RODIUMAI_VIDEO_MODEL="identifiant-modele-video" python main.py
 ```
 
-Le fichier `.env.example` est fourni comme aide-mémoire. Pour éviter toute dépendance supplémentaire, le script ne lit pas les fichiers `.env` automatiquement. Si la variable d'environnement n'est pas définie, il vous demandera la clé au lancement.
-
-## Lancement
+## Exécution
 
 ```bash
 python main.py
 ```
 
-Le script utilise `https://api.rodiumai.io/v1/` et envoie l'authentification avec un jeton Bearer. Les résultats sont enregistrés dans `outputs/` : `image_generee.png` et `video_generee.mp4`.
+À la fin de chaque étape : 1) revenir à l'étape précédente, 2) refaire l'étape actuelle, ou 3) passer à la suivante. Les résultats sont `outputs/output_image.png` et `outputs/output_video.mp4`.
 
-## Étapes
+## Vérification et captures curl demandées
 
-1. **Chat** — saisissez une question ; la réponse et `cost_rodi` sont affichés lorsque cette donnée est présente dans la réponse de l'API.
-2. **Image** — saisissez une description ; le contenu `b64_json` est décodé en PNG, avec prise en charge d'une URL en solution de repli.
-3. **Vidéo** — saisissez une description ; le script enregistre une vidéo retournée en URL ou base64. Pour une réponse asynchrone avec identifiant, il vérifie la ressource vidéo jusqu'à 10 minutes.
+Ces commandes servent aux deux captures d'écran requises (wallet et chat). Elles utilisent la clé du fichier `.env` dans un terminal Bash :
 
-Les appels d'images et de vidéos utilisent les champs de requête `prompt`. La forme exacte des réponses et la prise en charge du polling dépendent de la configuration de l'API RodiumAI ; les erreurs HTTP et les réponses non prises en charge sont affichées pour faciliter le diagnostic.
+```bash
+set -a; . ./.env; set +a
+curl -i https://api.rodiumai.io/v1/wallet \
+  -H "Authorization: Bearer $RODIUMAI_API_KEY"
+```
+
+Capturez la commande et sa réponse wallet. Pour le chat :
+
+```bash
+curl -i https://api.rodiumai.io/v1/chat/completions \
+  -H "Authorization: Bearer $RODIUMAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Bonjour, réponds en une phrase."}]}'
+```
+
+Ajoutez les deux captures curl, le lien GitHub (https://github.com/justin2119/rodiumai-bootcamp-module03-assignment3) à votre PDF, ainsi que trois captures d'exécution (Chat, Image montrant le PNG créé et Vidéo montrant le MP4 créé).
+
+## Dépannage génération image/vidéo
+
+`main.py` affiche le payload envoyé, la méthode/URL et le statut HTTP. En cas d'erreur, il imprime le corps retourné par l'API, et si une réponse réussit mais ne contient aucun champ image/vidéo attendu, il affiche le JSON brut. Cela aide à distinguer clé/droits (401/403), solde (402), modèle ou paramètres (400/422), limite (429) et erreur fournisseur (5xx). Les structures usuelles sont prises en charge : champs imbriqués ou `data[]`, `b64_json`, `url`/`image_url`/`video_url`, identifiants de tâche et polling (`poll_url`/`status_url` ou `/v1/videos/{id}`). Le polling dure au plus 10 minutes.
+
+Référence API : https://www.rodiumai.io/docs/api/overview (image et vidéo : `POST /v1/images/generations`, `POST /v1/videos/generations`; wallet : `GET /v1/wallet`). Les modèles et détails de réponse peuvent varier selon le catalogue et le compte. Si l'API renvoie une erreur de validation, consultez la réponse brute, puis indiquez explicitement les variables `RODIUMAI_IMAGE_MODEL` ou `RODIUMAI_VIDEO_MODEL` appropriées.
