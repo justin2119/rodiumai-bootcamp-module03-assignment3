@@ -1,0 +1,11 @@
+# Secrets locaux
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Résultats générés
+outputs/
