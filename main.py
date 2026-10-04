@@ -21,7 +21,7 @@ def clean_key(value):
     """Retire espaces, guillemets et espaces accidentels autour d'une clé."""
     if value is None:
         return ""
-    return str(value).strip().strip('"').strip("'").strip()
+    return str(value).strip().strip('\"').strip("'").strip()
 
 
 def load_api_key():
@@ -153,7 +153,7 @@ def chat_step():
     if not prompt:
         print("Question vide, aucun appel effectué.")
         return
-    payload = {"messages": [{"role": "user", "content": prompt}]}
+    payload = {"model": os.getenv("RODIUMAI_CHAT_MODEL", "rodium/auto"), "messages": [{"role": "user", "content": prompt}]}
     result = request_json("POST", "chat/completions", payload)
     show_response("chat", result)
     answer = first_value(result, ["content", "text"])
@@ -166,10 +166,7 @@ def image_step():
     if not prompt:
         print("Description vide, aucun appel effectué.")
         return
-    payload = {"prompt": prompt}
-    model = os.getenv("RODIUMAI_IMAGE_MODEL", "").strip()
-    if model:
-        payload["model"] = model
+    payload = {"prompt": prompt, "model": os.getenv("RODIUMAI_IMAGE_MODEL", "rodium-image-v1")}
     payload["response_format"] = "b64_json"
     print("[DEBUG] POST /v1/images/generations payload :", json.dumps(payload, ensure_ascii=False))
     result = request_json("POST", "images/generations", payload)
@@ -192,10 +189,7 @@ def video_step():
     if not prompt:
         print("Description vide, aucun appel effectué.")
         return
-    payload = {"prompt": prompt}
-    model = os.getenv("RODIUMAI_VIDEO_MODEL", "").strip()
-    if model:
-        payload["model"] = model
+    payload = {"prompt": prompt, "model": os.getenv("RODIUMAI_VIDEO_MODEL", "rodium-video-v1")}
     print("[DEBUG] POST /v1/videos/generations payload :", json.dumps(payload, ensure_ascii=False))
     result = request_json("POST", "videos/generations", payload)
     show_response("vidéo, création", result)
