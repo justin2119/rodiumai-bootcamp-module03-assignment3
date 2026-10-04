@@ -25,11 +25,26 @@ def clean_key(value):
 
 
 def load_api_key():
-    """Cherche la clé dans l'environnement puis .env, sinon demande interactivement."""
-    key = clean_key(os.getenv("RODIUMAI_API_KEY"))
+    """Cherche la clé dans l'environnement puis dans les fichiers .env."""
+    key_names = ("RODIUMAI_API_KEY", "RODIUM_API_KEY")
+
+    # Prefer keys already exported in the process environment.
+    for name in key_names:
+        key = clean_key(os.environ.get(name))
+        if key:
+            os.environ[name] = key
+            break
+
+    # Search the working directory, this script's directory, then its parent.
     if not key:
-        env_path = Path(__file__).resolve().parent / ".env"
-        if env_path.is_file():
+        env_paths = (
+            Path(".") / ".env",
+            Path(__file__).resolve().parent / ".env",
+            Path(__file__).resolve().parent.parent / ".env",
+        )
+        for env_path in env_paths:
+            if not env_path.is_file():
+                continue
             try:
                 raw = env_path.read_bytes()
                 # Windows Notepad may save UTF-16 with a BOM; UTF-8-SIG handles UTF-8 BOM.
@@ -45,22 +60,21 @@ def load_api_key():
                     if not line or line.startswith("#") or "=" not in line:
                         continue
                     name, value = line.split("=", 1)
-                    if name.strip() == "RODIUMAI_API_KEY":
+                    name = name.strip()
+                    if name in key_names:
                         key = clean_key(value)
                         if key:
+                            os.environ[name] = key
                             break
+                if key:
+                    break
             except OSError as exc:
-                print(f"[AVERTISSEMENT] Lecture de .env impossible : {exc}", file=sys.stderr)
-    if not key:
-        try:
-            key = clean_key(input("Clé RODIUMAI_API_KEY non détectée. Entrez votre clé ici : "))
-        except (EOFError, KeyboardInterrupt):
-            print("\\nSaisie de la clé annulée.", file=sys.stderr)
-            return ""
+                print(f"[AVERTISSEMENT] Lecture de {env_path} impossible : {exc}", file=sys.stderr)
+
     if key:
         # Only show a masked preview; never print the complete secret.
         suffix = key[-4:] if len(key) > 4 else "****"
-        print(f"[OK] Clé API chargée (rd_sk_...{suffix})")
+        print(f"[AUTH] Clé API trouvée (rd_sk_...{suffix})")
     return key
 
 
