@@ -21,7 +21,7 @@ def clean_key(value):
     """Retire espaces, guillemets et espaces accidentels autour d'une clé."""
     if value is None:
         return ""
-    return str(value).strip().strip('\"').strip("'").strip()
+    return str(value).strip().strip('\\"').strip("'").strip()
 
 
 def load_api_key():
@@ -33,15 +33,15 @@ def load_api_key():
             try:
                 raw = env_path.read_bytes()
                 # Windows Notepad may save UTF-16 with a BOM; UTF-8-SIG handles UTF-8 BOM.
-                if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+                if raw.startswith((b"\\xff\\xfe", b"\\xfe\\xff")):
                     content = raw.decode("utf-16", errors="ignore")
                 else:
                     content = raw.decode("utf-8-sig", errors="ignore")
                     # Also tolerate UTF-16 files lacking a BOM by removing their NUL bytes.
-                    if "\x00" in content:
-                        content = content.replace("\x00", "")
+                    if "\\x00" in content:
+                        content = content.replace("\\x00", "")
                 for line in content.splitlines():
-                    line = line.strip().lstrip("\ufeff")
+                    line = line.strip().lstrip("\\ufeff")
                     if not line or line.startswith("#") or "=" not in line:
                         continue
                     name, value = line.split("=", 1)
@@ -55,7 +55,7 @@ def load_api_key():
         try:
             key = clean_key(input("Clé RODIUMAI_API_KEY non détectée. Entrez votre clé ici : "))
         except (EOFError, KeyboardInterrupt):
-            print("\nSaisie de la clé annulée.", file=sys.stderr)
+            print("\\nSaisie de la clé annulée.", file=sys.stderr)
             return ""
     if key:
         # Only show a masked preview; never print the complete secret.
@@ -81,11 +81,11 @@ def request_json(method, endpoint, payload=None):
     print(f"[HTTP] {method} {url} -> {response.status_code}")
     if not response.ok:
         detail = response_summary(response)
-        raise RuntimeError(f"Réponse API HTTP {response.status_code}. Détails :\n{detail}\n\nVérifiez la clé, le solde RODI, le modèle et le format du payload.")
+        raise RuntimeError(f"Réponse API HTTP {response.status_code}. Détails :\\n{detail}\\n\\nVérifiez la clé, le solde RODI, le modèle et le format du payload.")
     try:
         return response.json()
     except ValueError:
-        raise RuntimeError("L'API a répondu avec un succès HTTP mais pas du JSON. Réponse :\n" + (response.text or "<vide>")[:12000])
+        raise RuntimeError("L'API a répondu avec un succès HTTP mais pas du JSON. Réponse :\\n" + (response.text or "<vide>")[:12000])
 
 
 def nested_values(data):
@@ -110,7 +110,7 @@ def first_value(data, names):
 
 
 def show_response(label, result):
-    print(f"[DEBUG] Réponse RodiumAI ({label}) :\n{json.dumps(result, ensure_ascii=False, indent=2)[:12000]}")
+    print(f"[DEBUG] Réponse RodiumAI ({label}) :\\n{json.dumps(result, ensure_ascii=False, indent=2)[:12000]}")
 
 
 def save_b64(value, path):
@@ -166,7 +166,7 @@ def image_step():
     if not prompt:
         print("Description vide, aucun appel effectué.")
         return
-    payload = {"prompt": prompt, "model": os.getenv("RODIUMAI_IMAGE_MODEL", "rodium-image-v1")}
+    payload = {"prompt": prompt, "model": os.getenv("RODIUMAI_IMAGE_MODEL", "openai/gpt-image-1.5")}
     payload["response_format"] = "b64_json"
     print("[DEBUG] POST /v1/images/generations payload :", json.dumps(payload, ensure_ascii=False))
     result = request_json("POST", "images/generations", payload)
@@ -189,7 +189,7 @@ def video_step():
     if not prompt:
         print("Description vide, aucun appel effectué.")
         return
-    payload = {"prompt": prompt, "model": os.getenv("RODIUMAI_VIDEO_MODEL", "rodium-video-v1")}
+    payload = {"prompt": prompt, "model": os.getenv("RODIUMAI_VIDEO_MODEL", "google/veo-3.1")}
     print("[DEBUG] POST /v1/videos/generations payload :", json.dumps(payload, ensure_ascii=False))
     result = request_json("POST", "videos/generations", payload)
     show_response("vidéo, création", result)
@@ -208,12 +208,12 @@ def video_step():
             break
         status = str(first_value(current, ["status", "state"]) or "").lower()
         if status in {"failed", "error", "cancelled", "canceled"}:
-            raise RuntimeError("Génération vidéo échouée. Réponse brute :\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
+            raise RuntimeError("Génération vidéo échouée. Réponse brute :\\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
         task_id = first_value(current, ["task_id", "request_id", "job_id", "id"])
         if not task_id:
-            raise RuntimeError("Réponse vidéo sans URL/base64 ni identifiant de tâche reconnu. Réponse brute :\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
+            raise RuntimeError("Réponse vidéo sans URL/base64 ni identifiant de tâche reconnu. Réponse brute :\\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
         if time.monotonic() >= deadline:
-            raise TimeoutError(f"Tâche vidéo {task_id} toujours non terminée après 10 minutes. Dernière réponse :\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
+            raise TimeoutError(f"Tâche vidéo {task_id} toujours non terminée après 10 minutes. Dernière réponse :\\n" + json.dumps(current, ensure_ascii=False, indent=2)[:12000])
         poll_url = first_value(current, ["poll_url", "status_url", "result_url"])
         if not poll_url:
             poll_url = f"videos/{task_id}"
@@ -228,7 +228,7 @@ STEPS = [("Chat", chat_step), ("Image", image_step), ("Vidéo", video_step)]
 
 
 def navigation(step):
-    print("\n1. Revenir à l'étape précédente" if step > 0 else "")
+    print("\\n1. Revenir à l'étape précédente" if step > 0 else "")
     print("2. Refaire l'étape actuelle")
     print("3. Passer à l'étape suivante" + (" (terminer)" if step == 2 else ""))
     while True:
@@ -251,14 +251,14 @@ def main():
     step = 0
     while step < len(STEPS):
         title, function = STEPS[step]
-        print(f"\n===== Étape {step + 1}/3 : {title} =====")
+        print(f"\\n===== Étape {step + 1}/3 : {title} =====")
         try:
             function()
         except KeyboardInterrupt:
-            print("\nÉtape interrompue.")
+            print("\\nÉtape interrompue.")
         except (requests.RequestException, RuntimeError, ValueError, TimeoutError) as exc:
-            print(f"\n[ERREUR] {exc}", file=sys.stderr)
-            print("[AIDE] HTTP 401/403 : clé ou droits; 402/insufficient balance : solde; 400/422 : payload/modèle; 429 : quota/limite; 5xx : service amont. Consultez le détail HTTP ci-dessus.")
+            print(f"\\n[ERREUR] {exc}", file=sys.stderr)
+            print("[AIDE] HTTP 401/403 : clé ou droits; 402/insufficient balance : solde; 400/422 : payload/modèle; 429 : quota/limite. Consultez le détail HTTP ci-dessus.")
         move = navigation(step)
         if move == 1:
             step += 1
